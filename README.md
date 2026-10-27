@@ -1,4 +1,10 @@
-# quarto-presentation-template
+# From files on disk to OME-Zarr
+
+Talk slides: converting microscopy volumes to OME-Zarr for neuroglancer, and sharing data over Globus. Build with `quarto render index.qmd`. See [HANDOFF.md](HANDOFF.md) for the deck's structure, where its numbers come from, and what is still to do.
+
+The rest of this README is the template's setup guide.
+
+## quarto-presentation-template
 
 ## Prerequisites
 
