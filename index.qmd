@@ -31,10 +31,10 @@ format:
 
 ## Why OME-Zarr? {.smaller}
 
-- An open format that neuroglancer, napari and Fiji all read
-- Arrays are cut into **chunks**, and a viewer fetches only the ones on screen
-- Compatible with simple HTTP requests, so the data never has to leave the server
-- A **pyramid** of downsampled copies, so zooming out is cheap
+- Open format for large, multi-dimensional images
+- Chunked, and standarised
+- Compatible with cloud based storage and parallel access
+- A pyramid of downsampled copies can be added making visualisation fast
 
 ## Ideal world for converting a large file {.smaller}
 - Try to reach the point where you're I/O bound (typically write-bound)
