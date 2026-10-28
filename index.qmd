@@ -2,68 +2,68 @@
 title: "From files on disk to OME-Zarr"
 subtitle: "Converting light-sheet and BrainSaw volumes for neuroglancer, and sharing them over Globus"
 author: "Igor Tatarnikov"
-date: today
+date: 2026-10-28
 format:
   revealjs:
-    footer: "From files on disk to OME-Zarr"
-    code-line-numbers: false
+    footer: "NIU Meeting 2026-10-28"
 ---
-## We have some data on disk
+
+## Whole brain micrscopy is big {.smaller}
 
 ::: {.columns}
 ::: {.column width="50%"}
-**Light-sheet (Imspector OME-TIFF)**
+**Light-sheet**
 
 - 2123 × 8879 × 6030 voxels, uint16
-- 2.7 × 2.7 × 5 µm
-- one file per channel, **227 GB each**
+- 5 × 2.71 × 2.71 um
+- **227 GB** per channel
 :::
+
 ::: {.column width="50%"}
 **Serial two-photon (BrainSaw)**
 
-- 7,650 single-plane TIFFs
-- 3 channels, **293 GB**
-- the largest one: 2 channels, **593 GB**
+- 2660 x 6431 x 8662 voxels, uint16
+- 5 x 1.2 x 1.2 um
+- **275 GB** per channel
 :::
 :::
 
-. . .
 
-We want anyone to open it from a link, in a browser, at any zoom.
-
-## ...and we want it to be OME-Zarr
+## Why OME-Zarr? {.smaller}
 
 - An open format that neuroglancer, napari and Fiji all read
 - Arrays are cut into **chunks**, and a viewer fetches only the ones on screen
-- Over HTTP, so the data never has to leave the server
+- Compatible with simple HTTP requests, so the data never has to leave the server
 - A **pyramid** of downsampled copies, so zooming out is cheap
 
-. . .
-
-How hard can it be? This talk is about what it took.
+## Ideal world for converting a large file {.smaller}
+- Try to reach the point where you're I/O bound (typically write-bound)
+  - SATA SSD: ~0.4 GB/s
+  - NVMe SSD: ~3 GB/s
+  - Ceph: :shrug:
+- Avoid reading the same data multiple times
+- Keep memory usage bounded
+- Compress before writing
+- Minimise the number of files
 
 ## What OME-Zarr asks of you {.smaller}
 
 ```
 scan.ome.zarr/
-├── zarr.json        ← OME metadata: axes, units, scale per level, channels
-├── s0/              ← full resolution, (c, z, y, x)
-│   ├── zarr.json    ← shape, chunk grid, codecs
-│   └── c/0/0/0/0    ← one shard file
-├── s1/              ← half size in each axis (Z only once voxels are near-isotropic)
+├── zarr.json        - OME metadata: axes, units, scale per level, channels
+├── s0/              - full resolution, (c, z, y, x)
+│   ├── zarr.json    - shape, chunk grid, codecs
+│   └── c/0/0/0/0    - one shard file
+├── s1/              - half size in each axis (Z only once voxels are near-isotropic)
 │   ...
-└── s7/              ← about one chunk across
+└── s7/              - about one chunk across
 ```
 
-Five decisions: **metadata**, **pyramid**, **chunk**, **shard**, **codec**.
-
-We targeted OME-Zarr **0.6**, on Zarr v3 with sharding.
-
-# Part 1: decide what the output looks like {background-color="#03A062"}
+Targeting OME-Zarr **0.6**, on Zarr v3 with sharding.
 
 ## Start with the metadata, not the data {.smaller}
 
-Write every `zarr.json` and no chunks, then inspect it:
+Write every `zarr.json` and no data, then inspect it:
 
 ```python
 image = ngff_zarr.to_ngff_image(lazy_array, dims=["c", "z", "y", "x"],
@@ -74,56 +74,58 @@ ngff_zarr.to_ngff_zarr(out, ms, version="0.6",
     chunks_per_shard=512 // 64, metadata_only=True)
 ```
 
+. . .
+
 - Cheap to iterate on: shapes, units and scales are all visible in seconds
-- ngff-zarr names levels `scaleN/<name>`, so rename them to `s0`, `s1`, ...
-- It refuses to set `omero` (channel colours and contrast), so patch the root `zarr.json` by hand
+- Easy to round trip and verify the metadata reads back
 
-## Chunks are what the viewer fetches
+## Chunks are optimised for fetching data
 
-- **64³** uint16 is 512 KiB per chunk
+- 64x64x64 uint16 is 512 KiB per chunk
 - Small cubes respond at any slicing angle: xy, xz, yz and 3D all fetch the same units
-- Chunk size is set for the *viewer*
+- Chunk size is set for the viewer
 
-## Shards are what the filesystem sees
+## Shards are optimised for storage and transfer {.smaller}
 
-The 2123 × 8879 × 6030 scan, 8 levels, 64³ chunks:
+- Shards group many chunks into one file
+- Reads are chunk based, writes are shard based
+
+. . .
 
 | layout | files |
-|---|---:|
-| one file per chunk | **514,930** |
-| 512³ shards of 64³ chunks | **1,283** |
+|---|---|
+| one file per 64x64x64 chunk | 514,930 |
+| 512x512x512 shards of 64x64x64 chunks | 1,283 |
 
-- Shard size is set for the *filesystem* (and for backups, Globus transfers, `ls`)
-- Neuroglancer still reads single chunks out of a shard with HTTP Range requests
+. . .
 
-## The codec
+- Shard size is set for the filesystem (and for backups, Globus transfers, `ls`)
 
-Measured on real 64³ chunks from the scan:
+## Compression {.smaller}
+
+Measured on real 64x64x64 chunks from the light-sheet data:
 
 | codec | ratio | speed per core |
 |---|---:|---:|
 | zstd, level 6 | 1.68 | 128 MB/s |
-| blosc(zstd, level 3, byte-shuffle) | **1.80** | **887 MB/s** |
+| blosc(zstd, level 3, byte-shuffle) | 1.80 | 887 MB/s |
 
-- Byte-shuffle groups the high bytes of every uint16 together, so they compress well
-- The result compresses better *and* is 7× faster, and neuroglancer decodes it
+- Byte-shuffle groups the high bytes of every uint16 together
 
-## The pyramid {.smaller}
+## Resolution pyramid {.smaller}
 
 - X and Y halve at every level
 - Z halves only once the XY spacing has caught up with it, so anisotropic stacks aren't blurred in Z too early
 
 | voxel (x, y, z) | level 1 | level 2 | level 3 |
 |---|---|---|---|
-| 2.71, 2.71, 5 µm | 2, 2, 2 | 4, 4, 4 | 8, 8, 8 |
-| 2.18, 2.18, 5 µm | 2, 2, **1** | 4, 4, 2 | 8, 8, 4 |
+| 2.71, 2.71, 5 µm | 2, 2, 1 | 4, 4, 2 | 8, 8, 4 |
+| 2.18, 2.18, 5 µm | 2, 2, 1 | 4, 4, 2 | 8, 8, 4 |
 
-- Add levels until the top one is about **one chunk across**, since neuroglancer loads it for the overview
-- For the scan that's 8 levels, with a top level of 16 × 69 × 47
+- Add levels until the top one is about one chunk across
+- For mouse mouse brains that's 8 levels, with a top level of 16 × 69 × 47
 
-# Part 2: getting the bytes across {background-color="#03A062"}
-
-## The naive path
+## `ngff-zarr` as the writer {.smaller} 
 
 Hand the whole array to ngff-zarr and let it write:
 
@@ -131,13 +133,11 @@ Hand the whole array to ngff-zarr and let it write:
 ngff_zarr.to_ngff_zarr(out, ngff_zarr.to_multiscales(image, ...))
 ```
 
-- **0.10 GB/s**, about 38 min for one 227 GB channel (local SSD)
-- It writes partial shard regions one after another, so each shard is rewritten many times
-- Its cache copies the whole of level 0 to `~/.cache` first
+- 0.10 GB/s, about 38 min for one 227 GB channel (local SSD)
 
-Fine for small data. Not for this.
+Ok for small data, but I'm impatient!
 
-## Lesson: write order is everything {.smaller}
+## Write in the right order {.smaller}
 
 ```
 one shard-thick layer of s0, seen looking down Z:
@@ -150,155 +150,49 @@ one shard-thick layer of s0, seen looking down Z:
  +-------+-------+-------+-------+
 ```
 
-- A **band** is all channels × one shard deep × one shard tall × the **full width** in X
-- Read the bands in order and **every shard is written once, whole**
-- Full-width rows are how a TIFF plane is laid out on disk: row reads ran at 380 MB/s against **34 MB/s** for cube reads (local NTFS disk)
+- A band is all channels × one shard deep × one shard tall × the full width in X
+- Full-width rows are how most data is laid out on disk. Row reads ran at 380 MB/s against 34 MB/s for cube reads.
 
 ## Build the pyramid on the way past
 
-- **s1** is block-meaned from each band while it is still in memory
+- s1 - is block-meaned from each band while it is still in memory
   - 2 to 4 s0 bands make one s1 band, which is also written once, whole
-- **s2 onward** is made from the level before it, one shard per task
+- s2 onward is made from the level before it, one shard per task
   - That's at most 1/8 of s0's size, so it takes about a minute
 - s0 is never read back from the output
 
-## The mean has to be exact {.smaller}
-
-The first streamed pyramid disagreed with ngff-zarr on **~50% of voxels**, each by 1.
-
-- Ours truncated, but ngff-zarr rounds half up: `floor(mean + 0.5)`
-- In integers that's `(sum + n // 2) // n`, with the sums in uint32
-
-```python
-def _sum_by(a, axis, s):  # s = 2 on the last axis: a[..., 0::2] + a[..., 1::2]
-    total = every_sth(0).astype(np.uint32)
-    for start in range(1, s):
-        total += every_sth(start)
-    return total
-```
-
-- Summing strided views runs at **2.29 GB/s**, against 0.44 GB/s for a float reshape-and-mean
-- A test checks that every level equals ngff-zarr's own output on an odd-sized, anisotropic volume
-
-# Part 3: memory {background-color="#03A062"}
-
-## OOM #1: "the channels are 230 GB each"
-
-- We read the input through `np.memmap`
-- Slurm counts every mapped page that has been touched as the job's memory, so the job was killed
-- **Fix:** `os.preadv` straight into a preallocated band, then drop those pages from the cache
-
-```python
-n = os.preadv(fd, [buf[got:]], offset + got)   # loop: network FS return short reads
-os.posix_fadvise(fd, offset, got, os.POSIX_FADV_DONTNEED)
-```
-
-The input never counts against the job's memory.
-
-## OOM #2: killed while just *opening* the file {.smaller}
-
-- MaxRSS was 100 GiB within 6 minutes, and the log had only one line
-- Stack dumps with `faulthandler` plus RSS sampling showed the cause: `dask.array.from_array` **tokenizes by pickling**, and it pickled the whole memmap
-- **Fix:** ngff-zarr only needs a shape and dtype for the metadata, so give it a lazy stand-in that it never computes:
-
-```python
-da.zeros(src.shape, dtype=src.dtype, chunks=(1, 64, 512, -1))
-```
-
-After the fix, the file opened in seconds.
-
-## OOM #3: queues that grow {.smaller}
-
-- Derived levels queued un-downsampled parent regions, reaching 41 GB RSS
-- **Fix:** a bounded pool. At most `workers + 1` tasks exist at once, and for s0, taking a task is what reads a band
-
-Worst case, measured:
-
-$$\text{RAM} \approx 3\,\text{GB} + (2.25 \times \text{workers} + 1) \times \text{band}$$
-
-with band = C × shard² × X × 2 bytes. For 3 channels, 512³ shards and X = 6481, a band is 10.2 GB, so about **60 GB** at 2 workers. `--shard 256` quarters it.
-
-# Part 4: speed {background-color="#03A062"}
-
-## Find the bottleneck before tuning
-
-Every progress line says how busy the reader is:
-
-```
-s0 + s1: 5/78 blocks (6%), 0.30 GB/s in, 2.1 min elapsed, ETA 1852 s,
-         reading 32% of the time at 1.56 GB/s
-```
-
-- Reading close to 100% of the time means the job is **read-bound**: add `--readers`
-- Reading well below 100% means the job is **worker-bound** (CPU or writes): add `--workers`, which costs RAM
-
-## zarr-python → tensorstore {.smaller}
+## zarr-python vs tensorstore {.smaller}
 
 On the cluster (Ceph), 2-channel OME-TIFF:
 
-| writer | throughput | what htop showed |
-|---|---:|---|
-| zarr-python | 0.04–0.08 GB/s | 12 threads at ~33%, no IO wait: the **GIL** |
-| tensorstore + integer mean | **0.36 GB/s** | read-bound |
-
-- tensorstore's zarr3 driver encodes and writes on its own threads
-- Size the thread pool to the CPUs the job was *given* (`os.sched_getaffinity(0)`), not the CPUs on the node
+| writer | throughput |
+|---|---|
+| zarr-python | 0.04–0.08 GB/s |
+| tensorstore | 0.36 GB/s |
 
 ## Reads depend on the storage
 
-- **Ceph** serves parallel reads much faster, so each band is read with 8 parallel `pread`s
-  - On a 593 GB BrainSaw stack, reads ran at **1.56 GB/s** and the reader was busy 32% of the time, so writing is now the limit
-- **A local NTFS disk** (ntfs-3g, FUSE) serializes I/O, so parallel reads were *slower*: 290 vs 400 MB/s
-- Open the files per read: BrainSaw's 7,650 files exceed the open-file limit
+- Ceph serves parallel reads much faster
+  - On a 593 GB BrainSaw stack, reads ran at 1.56 GB/s
+- A local NTFS disk serializes I/O, so parallel reads were slower: 290 vs 400 MB/s
 
-## Where it landed on a desktop
+## On Desktop
 
-One 227 GB channel, read from and written to the same local NTFS SSD:
+Two 227 GB channel, read from and written to the same local NTFS SSD:
 
-| | |
+| strategy | time |
 |---|---|
 | naive ngff-zarr | ~38 min |
-| streamed: s0 + s1 | 21.7 min (0.17 GB/s) |
-| streamed: s2 – s7 | ~1.2 min |
-| output | **95 GB in 1,292 files** |
-
-Every level was spot-checked against the source and matched exactly.
-
-# Part 5: running at scale {background-color="#03A062"}
-
-## One script, one array task per acquisition {.smaller}
-
-```bash
-#!/bin/bash
-#SBATCH --array=0-9            # 0 .. (lines in dirs.txt - 1)
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=64G              # from the memory formula, not a guess
-#SBATCH --output=ome-zarr_%A_%a.log
-python ome_tiff_to_zarr.py --shard 512 $(cat dirs.txt)
-```
-
-- `SLURM_ARRAY_TASK_ID` picks the *i*-th directory
-- The script is a single file with its dependencies inline (PEP 723), so `uv run` works anywhere
-- **An existing output is an error.** A store half-written by a killed job looks complete
-- Line-buffer stdout, or the progress lines sit in a buffer until the job ends
-
-# Part 6: looking at it {background-color="#03A062"}
+| tensorstore | ~22 min |
 
 ## Serving it
 
-- Neuroglancer reads single chunks out of shards with **HTTP Range** requests, and it needs **CORS**
-- A Globus **guest collection with public read** provides both (Part 7 covers setting one up)
-- A *mapped* collection needs a login, so the same link fails there
-
-```
-https://neuroglancer-demo.appspot.com/#!https://<collection>.data.globus.org/<dir>/scan.ngl.json
-```
+- Neuroglancer reads single chunks out of shards with HTTP Range requests, and it needs CORS
+- A Globus guest collection with public read provides both
 
 ## Neuroglancer quirks
 
-- OME-Zarr 0.6 (`coordinateSystems`) is only in current neuroglancer `master`; older builds read only 0.4/0.5
-  - Fiji support for 0.6 is unverified
-- The hosted demo **ignores the `omero` contrast window** and opens nearly black
+- The hosted demo ignores some metadata and opens nearly black
 - Axes are shown in file order (z, y, x), so the "xy" panel shows z against y
 - A full state in the URL is long and fragile
 
@@ -308,7 +202,7 @@ https://neuroglancer-demo.appspot.com/#!https://<collection>.data.globus.org/<di
 
 - One additive layer per channel, with colour and contrast taken from `omero`
 - Axes ordered x, y, z, so "xy" really is xy
-- Starts zoomed out, with the 3D view in the corner, the shader controls docked, and optional volume rendering
+- Starts zoomed out, with the 3D view optionally in the corner, the shader controls docked, and optional volume rendering
 
 ```json
 {"layers": [{"type": "image", "source": "https://.../scan.ome.zarr/|zarr3:",
@@ -317,71 +211,25 @@ https://neuroglancer-demo.appspot.com/#!https://<collection>.data.globus.org/<di
  "layout": "4panel-alt"}
 ```
 
-# Part 7: Globus as a public file host {background-color="#03A062"}
+## Globus demo {.smaller}
 
-## Why not just use GIN? {.smaller}
-
-GIN (git + git-annex) is how we share test data today.
-
-| | Globus guest collection | GIN |
-|---|---|---|
-| Anonymous download with pooch | ✓ | ✓ |
-| Getting data there | none: served where it was written | upload with git-annex |
-| OME-Zarr in neuroglancer | ✓ | ✗ no byte ranges or CORS |
-| Versions, DOIs | none | git history, DOIs |
-
-One host for both the CI test files and the large volumes people browse.
-
-## Setting up a public guest collection {.smaller}
-
-1. **Prerequisite:** the institution's Globus Connect Server has a *mapped* collection that allows guest collections. Admins can turn sharing off, or gate the public option.
-2. In the web app's File Manager, go to the directory and choose **Share → Add Guest Collection**
-3. Under **Permissions → Add Permissions**, share with **public (anonymous)**, read only
-4. Get the base URL: right-click a file, choose **Get Link**, then **download the file directly**
+Follow the instructions https://liveuclac.sharepoint.com/sites/SSC/SitePages/Globus-Guest-Collections.aspx
 
 ```
-https://g-xxxxxx.xxxxx.03c0.data.globus.org/<path inside the shared directory>
+https://g-xxxxxx.xxxxx.data.globus.org/<path inside the shared directory>
 ```
 
-- The hostname belongs to the guest collection: delete and recreate it, and every link changes
-- The HTTPS server [does not list directories](https://docs.globus.org/globus-connect-server/v5/https-access-collections/), so clients must know file paths in advance
+- The hostname belongs to the guest collection
 
 ## Test data for CI with pooch {.smaller}
 
 ```python
 import pooch
 
-DATA = pooch.create(
-    path=pooch.os_cache("amf-convert"),
-    base_url="https://<collection>.data.globus.org/test-data/v1/",
-    registry={
-        "imspector/scan_C00.ome.tif": "sha256:…",
-        "brainsaw/recipe_test.yml": "sha256:…",
-    },
-)
-tif = DATA.fetch("imspector/scan_C00.ome.tif")
+base = "https://g-1d54fe.3cf00.03c0.data.globus.org/"
+
+# neuroglancer state file
+pooch.retrieve(base + "RC_Ai14_SOM_02.ngl.json")
 ```
 
 - Tested: `pooch.retrieve` downloads from our public collection with no login
-- With no directory listing, the registry *is* the index, and pooch needs one anyway
-- There's no versioning either, so put the version in the path (`v1/`), never overwrite a file, and let the hash catch any change
-- Cache pooch's directory in CI, keyed on the registry
-
-## Before you make it public
-
-- **Public means anyone, forever:** links get copied, cached and indexed
-- Check what rides along with the data: one acquisition's metadata file held a **webhook token**
-- Grant read-only access; administrators can also block anonymous writes server-wide
-- It depends on the institution's Globus subscription and policy, not on a service you control
-- For anything citable, still mint a DOI (GIN, Zenodo); use Globus for big data you want to stream
-
-## Takeaways {.smaller}
-
-1. **Prototype the metadata** and look at it before writing any data
-2. Set **chunk size for the viewer** (64³) and **shard size for the filesystem** (512³); use blosc-zstd with shuffle
-3. **Write each shard once:** read full-width bands in order
-4. **Build the pyramid from data already in memory**, and test it against the reference writer
-5. **Don't let a library hold your input:** use pread with fadvise, lazy stand-ins and bounded queues
-6. **Measure how much of the time you spend reading** before tuning anything
-7. **Refuse to overwrite**, line-buffer logs, and ship a state file with every store
-8. **Host on a public Globus guest collection** to stream to neuroglancer, and fetch CI data with pooch from versioned paths
