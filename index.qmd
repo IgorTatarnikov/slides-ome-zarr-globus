@@ -8,22 +8,22 @@ format:
     footer: "NIU Meeting 2026-10-28"
 ---
 
-## Whole brain micrscopy is big {.smaller}
+## Whole-brain microscopy is big {.smaller}
 
 ::: {.columns}
 ::: {.column width="50%"}
 **Light-sheet**
 
 - 2123 × 8879 × 6030 voxels, uint16
-- 5 × 2.71 × 2.71 um
+- 5 × 2.71 × 2.71 µm
 - **227 GB** per channel
 :::
 
 ::: {.column width="50%"}
 **Serial two-photon (BrainSaw)**
 
-- 2660 x 6431 x 8662 voxels, uint16
-- 5 x 1.2 x 1.2 um
+- 2660 × 6431 × 8662 voxels, uint16
+- 5 × 1.2 × 1.2 µm
 - **275 GB** per channel
 :::
 :::
@@ -32,8 +32,8 @@ format:
 ## Why OME-Zarr? {.smaller}
 
 - Open format for large, multi-dimensional images
-- Chunked, and standarised
-- Compatible with cloud based storage and parallel access
+- Chunked, and standardised
+- Compatible with cloud-based storage and parallel access
 - A pyramid of downsampled copies can be added making visualisation fast
 
 ## Ideal world for converting a large file {.smaller}
@@ -123,7 +123,7 @@ Measured on real 64x64x64 chunks from the light-sheet data:
 | 2.18, 2.18, 5 µm | 2, 2, 1 | 4, 4, 2 | 8, 8, 4 |
 
 - Add levels until the top one is about one chunk across
-- For mouse mouse brains that's 8 levels, with a top level of 16 × 69 × 47
+- For mouse brains that's 8 levels, with a top level of 16 × 69 × 47
 
 ## `ngff-zarr` as the writer {.smaller} 
 
@@ -155,7 +155,7 @@ one shard-thick layer of s0, seen looking down Z:
 
 ## Build the pyramid on the way past
 
-- s1 - is block-meaned from each band while it is still in memory
+- s1 is block-meaned from each band while it is still in memory
   - 2 to 4 s0 bands make one s1 band, which is also written once, whole
 - s2 onward is made from the level before it, one shard per task
   - That's at most 1/8 of s0's size, so it takes about a minute
@@ -174,11 +174,11 @@ On the cluster (Ceph), 2-channel OME-TIFF:
 
 - Ceph serves parallel reads much faster
   - On a 593 GB BrainSaw stack, reads ran at 1.56 GB/s
-- A local NTFS disk serializes I/O, so parallel reads were slower: 290 vs 400 MB/s
+- A local NTFS disk serialises I/O, so parallel reads were slower: 290 vs 400 MB/s
 
 ## On Desktop
 
-Two 227 GB channel, read from and written to the same local NTFS SSD:
+One 227 GB channel, read from and written to the same local NTFS SSD:
 
 | strategy | time |
 |---|---|
@@ -213,7 +213,7 @@ Two 227 GB channel, read from and written to the same local NTFS SSD:
 
 ## Globus demo {.smaller}
 
-Follow the instructions https://liveuclac.sharepoint.com/sites/SSC/SitePages/Globus-Guest-Collections.aspx
+Follow the instructions at https://liveuclac.sharepoint.com/sites/SSC/SitePages/Globus-Guest-Collections.aspx
 
 ```
 https://g-xxxxxx.xxxxx.data.globus.org/<path inside the shared directory>
